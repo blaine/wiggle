@@ -295,74 +295,92 @@ class BriansBrain{
 }
 
 class SelectivePermeability{
-  // S=small molecules (white dots): seep through membrane pores
-  // L=large molecules (gray dots): completely blocked
-  // Both start left; S fills right over time; L stays left
-  // Bayer dithering maps concentration to visible dot density
+  // S=small molecules: pass based on local permeability (varies continuously along membrane)
+  // L=large molecules: always blocked — membrane bright where open, dark where closed
+  // Permeability field built from overlapping sine waves → irregular channeling effect
   constructor(){
     this.S=new Float32Array(GW*GH);this.L=new Float32Array(GW*GH);
     this.Sn=new Float32Array(GW*GH);this.Ln=new Float32Array(GW*GH);
     this.memX=GW>>1;
-    // 8 pores, each 5 cells tall, evenly spaced
-    this.pore=new Uint8Array(GH);
-    for(let i=0;i<8;i++){const base=Math.floor(GH/8*i+GH/16);
-      for(let dy=-2;dy<=2;dy++)this.pore[(base+dy+GH)%GH]=1;}
+    // Multi-frequency sine product → smooth but irregular permeability landscape
+    this.permS=new Float32Array(GH);
+    for(let y=0;y<GH;y++){
+      const p=(0.5+0.5*Math.sin(y*.11))*(0.5+0.5*Math.sin(y*.07+1.3))*(0.5+0.5*Math.sin(y*.19+2.8));
+      this.permS[y]=0.004+p*.36;} // range ~0.004–0.364, varies by zone
     this.frame=0;this.reset();}
   reset(){this.frame=0;const{S,L,memX}=this;
     for(let y=0;y<GH;y++)for(let x=0;x<GW;x++){const i=y*GW+x;
       S[i]=x<memX?0.85+Math.random()*.15:0;
       L[i]=x<memX?0.75+Math.random()*.15:0;}}
-  step(){const{pore,memX}=this;this.frame++;
+  step(){const{permS,memX}=this;this.frame++;
     if(this.frame>900)this.reset();
     const Ds=.18,Dl=.14;
-    // 3 substeps so equalization is visible within the viz window
     for(let sub=0;sub<3;sub++){
       const{S,L,Sn,Ln}=this;
       for(let y=0;y<GH;y++){const ym=y>0?y-1:GH-1,yp=y<GH-1?y+1:0;
         for(let x=0;x<GW;x++){const xm=x>0?x-1:GW-1,xp=x<GW-1?x+1:0,i=y*GW+x;
           const cR=(x<memX&&xp>=memX)||(x>=memX&&xp<memX);
           const cL2=(x<memX&&xm>=memX)||(x>=memX&&xm<memX);
-          // Correct flux: perm*(neighbor-self), not broken Laplacian-scaling
-          const sp=pore[y]?.22:.003; // S: through pores freely, barely elsewhere
-          // L: lp=0, so blocked entirely — simplify to skip x-cross flux for L
+          const sp=permS[y]; // continuous local permeability for S
           const fSxp=(cR?sp:1)*(S[y*GW+xp]-S[i]);
           const fSxm=(cL2?sp:1)*(S[y*GW+xm]-S[i]);
           const fSy=(S[ym*GW+x]-S[i])+(S[yp*GW+x]-S[i]);
-          // L has no cross-membrane flux (lp=0 → cR/cL terms vanish)
           const fLxp=cR?0:(L[y*GW+xp]-L[i]);
           const fLxm=cL2?0:(L[y*GW+xm]-L[i]);
           const fLy=(L[ym*GW+x]-L[i])+(L[yp*GW+x]-L[i]);
           Sn[i]=Math.max(0,Math.min(1,S[i]+Ds*(fSxp+fSxm+fSy)));
           Ln[i]=Math.max(0,Math.min(1,L[i]+Dl*(fLxp+fLxm+fLy)));}}
       let t=this.S;this.S=this.Sn;this.Sn=t;t=this.L;this.L=this.Ln;this.Ln=t;}}
-  render(){const{S,L,memX,pore}=this;
-    const B=[[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]]; // 4x4 Bayer matrix
+  render(){const{S,L,memX,permS}=this;
+    const B=[[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]];
     for(let y=0;y<GH;y++)for(let x=0;x<GW;x++){const i=y*GW+x;
-      if(x>=memX-1&&x<=memX+1){pixels[i]=pore[y]?55:12;continue;}
+      if(x>=memX-1&&x<=memX+1){
+        // membrane brightness encodes local permeability: bright=open channel, dark=closed
+        pixels[i]=Math.floor(6+permS[y]*190);continue;}
       const thr=B[y%4][x%4]/16;
       const sOn=S[i]>thr,lOn=L[i]>thr;
       pixels[i]=sOn&&lOn?190:sOn?255:lOn?105:0;}}
 }
 
 class EquilibriumVsLiving{
-  constructor(){this.L=new Float32Array(GW*GH);this.R=new Float32Array(GW*GH);
-    this.Ln=new Float32Array(GW*GH);this.Rn=new Float32Array(GW*GH);this.divX=GW>>1;this.frame=0;this.reset();}
-  reset(){const{L,R}=this;this.frame=0;
-    for(let y=0;y<GH;y++)for(let x=0;x<GW;x++){
-      const g=1-y/GH;L[y*GW+x]=g+(Math.random()-.5)*.05;R[y*GW+x]=g+(Math.random()-.5)*.05;}}
-  step(){const{L,R,Ln,Rn,divX}=this;this.frame++;
-    if(this.frame>800)this.reset();
-    for(let y=0;y<GH;y++){const ym=y>0?y-1:GH-1,yp=y<GH-1?y+1:0;
-      for(let x=0;x<GW;x++){const xm=x>0?x-1:GW-1,xp=x<GW-1?x+1:0,i=y*GW+x;
-        const ll=L[ym*GW+x]+L[yp*GW+x]+L[y*GW+xm]+L[y*GW+xp]-4*L[i];
-        const lr=R[ym*GW+x]+R[yp*GW+x]+R[y*GW+xm]+R[y*GW+xp]-4*R[i];
-        Ln[i]=Math.max(0,Math.min(1,L[i]+.15*ll));
-        Rn[i]=Math.max(0,Math.min(1,R[i]+.15*lr+(1-y/GH-R[i])*.04));}}
-    let t=this.L;this.L=this.Ln;this.Ln=t;t=this.R;this.R=this.Rn;this.Rn=t;}
-  render(){const{L,R,divX}=this;
-    for(let y=0;y<GH;y++)for(let x=0;x<GW;x++){
-      const i=y*GW+x;
-      pixels[i]=x===divX?120:Math.floor((x<divX?L[i]:R[i])*255);}}
+  // Left: closed box, pure diffusion → gradient collapses to uniform (entropy wins)
+  // Right: active pump continuously restores gradient (living system maintains order)
+  // Neumann (no-flux) BCs at all walls and center divider — true closed compartments
+  // Pump pulses sweep upward on right side as visual marker of active work
+  constructor(){
+    this.F=new Float32Array(GW*GH);this.Fn=new Float32Array(GW*GH);
+    this.divX=GW>>1;this.frame=0;this.pulses=[];this.pTimer=0;this.reset();}
+  reset(){const{F,divX}=this;this.frame=0;this.pulses=[];this.pTimer=0;
+    for(let y=0;y<GH;y++)for(let x=0;x<GW;x++)
+      F[y*GW+x]=(1-y/GH)+(Math.random()-.5)*.08;}
+  step(){const{F,Fn,divX}=this;this.frame++;
+    if(this.frame>900)this.reset();
+    const D=0.12;
+    for(let sub=0;sub<4;sub++){
+      for(let y=0;y<GH;y++){
+        const ym=y>0?y-1:0,yp=y<GH-1?y+1:GH-1; // Neumann BC top/bottom
+        for(let x=0;x<GW;x++){const i=y*GW+x;
+          if(x===divX){Fn[i]=F[i];continue;} // divider: no flux across
+          // Neumann BC: no-flux at outer walls and at divider
+          const xm=x<divX?(x===0?0:x-1):Math.max(divX+1,x-1);
+          const xp=x<divX?Math.min(divX-1,x+1):(x===GW-1?GW-1:x+1);
+          const lap=F[ym*GW+x]+F[yp*GW+x]+F[y*GW+xm]+F[y*GW+xp]-4*F[i];
+          const pump=x>divX?(1-y/GH-F[i])*.03:0; // active gradient restoration on right
+          Fn[i]=Math.max(0,Math.min(1,F[i]+D*lap+pump));}}
+      const t=this.F;this.F=this.Fn;this.Fn=t;}
+    // Pump pulse — visual marker of active transport work, sweeps upward
+    this.pTimer++;
+    if(this.pTimer>50){this.pTimer=0;this.pulses.push({y:GH-2,speed:1.5});}
+    for(const p of this.pulses)p.y-=p.speed;
+    this.pulses=this.pulses.filter(p=>p.y>0);}
+  render(){const{F,divX,pulses}=this;
+    const B=[[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]];
+    const pSet=new Set(pulses.map(p=>Math.floor(p.y)));
+    for(let y=0;y<GH;y++)for(let x=0;x<GW;x++){const i=y*GW+x;
+      if(x===divX){pixels[i]=60;continue;}
+      if(x>divX&&pSet.has(y)){pixels[i]=210;continue;} // pulse marker
+      const thr=B[y%4][x%4]/16;
+      pixels[i]=F[i]>thr?255:0;}}
 }
 
 class Symbiosis{

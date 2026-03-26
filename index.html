@@ -295,27 +295,53 @@ class BriansBrain{
 }
 
 class SelectivePermeability{
-  constructor(){this.A=new Float32Array(GW*GH);this.B=new Float32Array(GW*GH);
-    this.An=new Float32Array(GW*GH);this.Bn=new Float32Array(GW*GH);this.memX=GW>>1;this.frame=0;this.reset();}
-  reset(){const{A,B,memX}=this;this.frame=0;
-    for(let y=0;y<GH;y++)for(let x=0;x<GW;x++){
-      A[y*GW+x]=x<memX*.6?.8+Math.random()*.2:.02;
-      B[y*GW+x]=x<memX*.6?.6+Math.random()*.2:.02;}}
-  step(){const{A,B,An,Bn,memX}=this;this.frame++;
-    if(this.frame>800)this.reset();
-    for(let y=0;y<GH;y++){const ym=y>0?y-1:GH-1,yp=y<GH-1?y+1:0;
-      for(let x=0;x<GW;x++){const xm=x>0?x-1:GW-1,xp=x<GW-1?x+1:0,i=y*GW+x;
-        const crossR=(x<memX&&xp>=memX)||(x>=memX&&xp<memX);
-        const crossL=(x<memX&&xm>=memX)||(x>=memX&&xm<memX);
-        const pa=.15,pb=.01;
-        const laA=(crossR?A[y*GW+xp]*pa:A[y*GW+xp])+(crossL?A[y*GW+xm]*pa:A[y*GW+xm])+A[ym*GW+x]+A[yp*GW+x]-4*A[i];
-        const laB=(crossR?B[y*GW+xp]*pb:B[y*GW+xp])+(crossL?B[y*GW+xm]*pb:B[y*GW+xm])+B[ym*GW+x]+B[yp*GW+x]-4*B[i];
-        An[i]=Math.max(0,Math.min(1,A[i]+.25*laA));Bn[i]=Math.max(0,Math.min(1,B[i]+.08*laB));}}
-    let t=this.A;this.A=this.An;this.An=t;t=this.B;this.B=this.Bn;this.Bn=t;}
-  render(){const{A,B,memX}=this;
-    for(let y=0;y<GH;y++)for(let x=0;x<GW;x++){
-      const i=y*GW+x;
-      pixels[i]=x===memX?90:Math.floor(Math.min(1,Math.max(A[i],B[i]*.6))*240);}}
+  // S=small molecules (white dots): seep through membrane pores
+  // L=large molecules (gray dots): completely blocked
+  // Both start left; S fills right over time; L stays left
+  // Bayer dithering maps concentration to visible dot density
+  constructor(){
+    this.S=new Float32Array(GW*GH);this.L=new Float32Array(GW*GH);
+    this.Sn=new Float32Array(GW*GH);this.Ln=new Float32Array(GW*GH);
+    this.memX=GW>>1;
+    // 8 pores, each 5 cells tall, evenly spaced
+    this.pore=new Uint8Array(GH);
+    for(let i=0;i<8;i++){const base=Math.floor(GH/8*i+GH/16);
+      for(let dy=-2;dy<=2;dy++)this.pore[(base+dy+GH)%GH]=1;}
+    this.frame=0;this.reset();}
+  reset(){this.frame=0;const{S,L,memX}=this;
+    for(let y=0;y<GH;y++)for(let x=0;x<GW;x++){const i=y*GW+x;
+      S[i]=x<memX?0.85+Math.random()*.15:0;
+      L[i]=x<memX?0.75+Math.random()*.15:0;}}
+  step(){const{pore,memX}=this;this.frame++;
+    if(this.frame>900)this.reset();
+    const Ds=.18,Dl=.14;
+    // 3 substeps so equalization is visible within the viz window
+    for(let sub=0;sub<3;sub++){
+      const{S,L,Sn,Ln}=this;
+      for(let y=0;y<GH;y++){const ym=y>0?y-1:GH-1,yp=y<GH-1?y+1:0;
+        for(let x=0;x<GW;x++){const xm=x>0?x-1:GW-1,xp=x<GW-1?x+1:0,i=y*GW+x;
+          const cR=(x<memX&&xp>=memX)||(x>=memX&&xp<memX);
+          const cL2=(x<memX&&xm>=memX)||(x>=memX&&xm<memX);
+          // Correct flux: perm*(neighbor-self), not broken Laplacian-scaling
+          const sp=pore[y]?.22:.003; // S: through pores freely, barely elsewhere
+          // L: lp=0, so blocked entirely — simplify to skip x-cross flux for L
+          const fSxp=(cR?sp:1)*(S[y*GW+xp]-S[i]);
+          const fSxm=(cL2?sp:1)*(S[y*GW+xm]-S[i]);
+          const fSy=(S[ym*GW+x]-S[i])+(S[yp*GW+x]-S[i]);
+          // L has no cross-membrane flux (lp=0 → cR/cL terms vanish)
+          const fLxp=cR?0:(L[y*GW+xp]-L[i]);
+          const fLxm=cL2?0:(L[y*GW+xm]-L[i]);
+          const fLy=(L[ym*GW+x]-L[i])+(L[yp*GW+x]-L[i]);
+          Sn[i]=Math.max(0,Math.min(1,S[i]+Ds*(fSxp+fSxm+fSy)));
+          Ln[i]=Math.max(0,Math.min(1,L[i]+Dl*(fLxp+fLxm+fLy)));}}
+      let t=this.S;this.S=this.Sn;this.Sn=t;t=this.L;this.L=this.Ln;this.Ln=t;}}
+  render(){const{S,L,memX,pore}=this;
+    const B=[[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]]; // 4x4 Bayer matrix
+    for(let y=0;y<GH;y++)for(let x=0;x<GW;x++){const i=y*GW+x;
+      if(x>=memX-1&&x<=memX+1){pixels[i]=pore[y]?55:12;continue;}
+      const thr=B[y%4][x%4]/16;
+      const sOn=S[i]>thr,lOn=L[i]>thr;
+      pixels[i]=sOn&&lOn?190:sOn?255:lOn?105:0;}}
 }
 
 class EquilibriumVsLiving{

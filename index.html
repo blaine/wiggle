@@ -220,48 +220,66 @@ class NichePreemption{
 }
 
 class Pasteurization{
-  // Phase 0: diverse cyclic CA ecology fills the space
-  // Phase 1: heat plasma sweeps left→right with a wavy, organic front
-  //   — resistant clusters (pre-marked blobs) survive intact
-  //   — susceptible cells get killed stochastically as plasma passes over them
-  // Phase 2: sparse survivors remain; only resistant pockets hold the ecosystem
+  // Phase 0: cyclic CA with lazy update (40% per frame) — smooth, not jarring
+  // Phase 1: plasma sweeps left→right; kills all susceptible cells deterministically,
+  //   leaving only resistant clusters (pre-forced to state 1) as monoculture islands
+  // Phase 2: long aftermath — monoculture spreads very slowly from surviving clusters;
+  //   diversity only trickles back near the end (rare mutation)
   constructor(){
-    this.N=6;this.a=new Uint8Array(GW*GH);this.b=new Uint8Array(GW*GH);
-    this.resist=new Uint8Array(GW*GH); // heat-resistant patches (survive plasma)
+    this.N=5;this.a=new Uint8Array(GW*GH);this.b=new Uint8Array(GW*GH);
+    this.resist=new Uint8Array(GW*GH);
     this.phase=0;this.timer=0;this.front=0;this.reset();}
-  reset(){const{a,resist}=this;
+  reset(){const{a,b,resist}=this;
     this.phase=0;this.timer=0;this.front=0;
     for(let i=0;i<a.length;i++)a[i]=Math.floor(Math.random()*this.N);
     resist.fill(0);
-    // Scatter ~55 resistant blobs of radius 3–9; they survive the plasma pass
-    for(let k=0;k<55;k++){
-      const cx=Math.floor(Math.random()*GW),cy=Math.floor(Math.random()*GH),r=3+Math.floor(Math.random()*7);
+    // Resistant blobs forced to state 1 — these are the only survivors of the sweep
+    for(let k=0;k<50;k++){
+      const cx=Math.floor(Math.random()*GW),cy=Math.floor(Math.random()*GH),r=3+Math.floor(Math.random()*8);
       for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++)
-        if(dx*dx+dy*dy<=r*r)resist[((cy+dy+GH)%GH)*GW+((cx+dx+GW)%GW)]=1;}}
+        if(dx*dx+dy*dy<=r*r){const i=((cy+dy+GH)%GH)*GW+((cx+dx+GW)%GW);resist[i]=1;a[i]=1;b[i]=1;}}}
   step(){const{a,b,N,resist}=this;this.timer++;
-    if(this.phase===0&&this.timer>220){this.phase=1;this.front=0;}
+    if(this.phase===0&&this.timer>240){this.phase=1;this.front=0;}
     if(this.phase===1){
-      this.front+=1.0; // plasma front advances at 1 px/frame
+      this.front+=0.9;
       if(this.front>GW+50){this.phase=2;this.timer=0;}}
-    if(this.phase===2&&this.timer>320)this.reset();
-    const isP=this.phase===1;
+    if(this.phase===2&&this.timer>700)this.reset(); // long monoculture aftermath
+    const isP=this.phase===1,isPost=this.phase===2;
     for(let y=0;y<GH;y++){const ym=y>0?y-1:GH-1,yp=y<GH-1?y+1:0;
-      // Wavy leading edge — phase shifts as front advances, giving organic ripple
       const edge=isP?this.front+28*Math.sin(y*.09+this.front*.022):0;
       for(let x=0;x<GW;x++){const xm=x>0?x-1:GW-1,xp=x<GW-1?x+1:0,i=y*GW+x;
-        const prey=(a[i]+1)%N;
-        b[i]=(a[ym*GW+x]===prey||a[yp*GW+x]===prey||a[y*GW+xm]===prey||a[y*GW+xp]===prey)?prey:a[i];
-        // Kill zone: cells behind the wavy front (up to 40px deep) die unless resistant
-        if(isP&&x<edge&&x>edge-40&&!resist[i]&&Math.random()<.15)b[i]=0;}}
+        if(isPost){
+          // Monoculture slowly colonizes dead zones; diversity trickles back very late
+          if(a[i]===0){
+            const adj=a[ym*GW+x]===1||a[yp*GW+x]===1||a[y*GW+xm]===1||a[y*GW+xp]===1;
+            b[i]=adj&&Math.random()<.003?1:0;
+          } else {
+            // Very rare diversification only in last ~150 frames of the cycle
+            b[i]=(this.timer>550&&a[i]===1&&Math.random()<.00015)?2:a[i];
+          }
+        } else {
+          // Phase 0/1: lazy CA — only 40% of cells update per frame (reduces flicker)
+          if(Math.random()<.4){
+            const prey=(a[i]+1)%N;
+            b[i]=(a[ym*GW+x]===prey||a[yp*GW+x]===prey||a[y*GW+xm]===prey||a[y*GW+xp]===prey)?prey:a[i];
+          } else b[i]=a[i];
+          // Deterministic kill behind plasma front — true monoculture result
+          if(isP&&x<edge&&!resist[i])b[i]=0;}}}
     const t=this.a;this.a=this.b;this.b=t;}
-  render(){const{a,N,phase,front}=this;
+  render(){const{a,phase,front}=this;
     for(let y=0;y<GH;y++){
       const edge=phase===1?front+28*Math.sin(y*.09+front*.022):0;
       for(let x=0;x<GW;x++){const i=y*GW+x;
-        let v=Math.floor(a[i]/(N-1)*220);
-        if(phase===1){
-          if(x<edge&&x>edge-40)v=Math.min(255,v+45); // plasma glow behind front
-          if(Math.abs(x-edge)<2)v=255;}               // bright leading edge flash
+        const s=a[i];
+        let v;
+        if(phase===2){
+          // Aftermath: black=dead, mid-gray=monoculture, bright=rare new diversity
+          v=s===0?0:s===1?140:220;
+        } else {
+          v=Math.floor(s/(this.N-1)*210);
+          if(phase===1){
+            if(x<edge)v=Math.min(255,v+30); // subtle plasma glow
+            if(Math.abs(x-edge)<2)v=255;}}  // bright leading edge
         pixels[i]=v;}}}
 }
 
